@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": true
+  },
+  "references": [{ "path": "../scip-ingest" }],
+  "include": ["src/**/*"],
+  "exclude": ["dist", "reference", "corpus", "node_modules"]
+}

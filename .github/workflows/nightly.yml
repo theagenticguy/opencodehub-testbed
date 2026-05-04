@@ -1,0 +1,150 @@
+name: nightly
+
+# Nightly regression run. Installs @opencodehub/cli@latest from npm,
+# runs `codehub analyze` on at least one corpus repo, and (best-effort)
+# replays the gym against the baseline manifest.
+#
+# If the corpus smoke fails, open a GitHub issue so the drift gets a
+# human look.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC = 00:00 PT
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "gym/**"
+      - "eval/**"
+      - ".github/workflows/nightly.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke-analyze:
+    name: smoke — codehub analyze on one corpus repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # ts-pattern corpus is a submodule; keep it shallow.
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Install @opencodehub/cli@latest
+        run: pnpm add -g @opencodehub/cli@latest
+
+      - name: Print CLI version
+        run: codehub --version
+
+      - name: codehub analyze (typescript/ts-pattern)
+        id: analyze
+        run: |
+          set -euo pipefail
+          CORPUS="gym/corpus/repos/typescript/ts-pattern"
+          if [ ! -d "$CORPUS/.git" ] && [ ! -d "$CORPUS" ]; then
+            echo "corpus repo not present — skipping"
+            exit 0
+          fi
+          codehub analyze "$CORPUS" --force --skip-agents-md \
+            | tee analyze.log
+          HASH=$(grep -oE 'graph [a-f0-9]{8}' analyze.log | head -1 | awk '{print $2}')
+          echo "graphHash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "Computed graphHash: $HASH"
+
+      - name: Compare against baseline (soft — log only)
+        if: steps.analyze.outputs.graphHash != ''
+        run: |
+          BASELINE=gym/baselines/manifest.jsonl
+          if [ -f "$BASELINE" ]; then
+            echo "Baseline exists at $BASELINE — hash drift review happens in the gym job."
+          else
+            echo "No baseline manifest yet — recording $GRAPH_HASH as provisional."
+          fi
+        env:
+          GRAPH_HASH: ${{ steps.analyze.outputs.graphHash }}
+
+      - name: Upload analyze log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analyze-log
+          path: analyze.log
+          if-no-files-found: ignore
+
+      - name: Open issue on regression
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `nightly regression: codehub analyze failed on ${new Date().toISOString().slice(0,10)}`;
+            const body = [
+              `The nightly smoke run failed \`codehub analyze\` on the ts-pattern corpus.`,
+              ``,
+              `Workflow run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+              ``,
+              `Likely causes: CLI change landed in @opencodehub/cli@latest that alters graph output, or a corpus submodule drifted.`,
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["regression", "nightly"],
+            });
+
+  gym-replay:
+    name: gym replay against baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: smoke-analyze
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Install @opencodehub/cli@latest
+        run: pnpm add -g @opencodehub/cli@latest
+
+      - name: Build gym
+        working-directory: gym
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm run build
+
+      - name: Gym replay (soft — log only)
+        working-directory: gym
+        run: |
+          if [ -f baselines/manifest.jsonl ]; then
+            node dist/cli.js replay --baseline baselines/manifest.jsonl || true
+          else
+            echo "No baseline manifest yet — skipping replay."
+          fi

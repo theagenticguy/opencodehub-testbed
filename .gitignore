@@ -1,0 +1,25 @@
+# Node / pnpm
+node_modules/
+pnpm-debug.log*
+pnpm-error.log*
+
+# TypeScript build output
+dist/
+*.tsbuildinfo
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# OpenCodeHub analyze output
+.codehub/
